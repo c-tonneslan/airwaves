@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo } from "react";
-import { Search, X, Star, Clock } from "lucide-react";
+import { Search, X, Star, Clock, Sparkles } from "lucide-react";
 import type { Station } from "@/lib/types";
+import type { SimilarStation } from "@/lib/similarity";
 
 interface Props {
   stations: Station[];
@@ -19,9 +20,10 @@ interface Props {
   favorites: Set<string>;
   onToggleFavorite: (uuid: string) => void;
   recents: string[];
+  similar: SimilarStation[];
 }
 
-export type ViewMode = "all" | "starred" | "recent";
+export type ViewMode = "all" | "starred" | "recent" | "similar";
 
 export default function Sidebar({
   stations,
@@ -38,7 +40,13 @@ export default function Sidebar({
   favorites,
   onToggleFavorite,
   recents,
+  similar,
 }: Props) {
+  const similarScoreByUuid = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of similar) m.set(s.uuid, s.score);
+    return m;
+  }, [similar]);
   const stationsByUuid = useMemo(() => {
     const m = new Map<string, Station>();
     for (const s of stations) m.set(s.stationuuid, s);
@@ -86,6 +94,10 @@ export default function Sidebar({
       base = recents
         .map((id) => stationsByUuid.get(id))
         .filter((s): s is Station => Boolean(s));
+    } else if (view === "similar") {
+      base = similar
+        .map((s) => stationsByUuid.get(s.uuid))
+        .filter((s): s is Station => Boolean(s));
     } else {
       base = stations;
     }
@@ -107,7 +119,7 @@ export default function Sidebar({
       );
     }
     return list.slice(0, 500);
-  }, [stations, view, favorites, recents, stationsByUuid, query, country, tag]);
+  }, [stations, view, favorites, recents, similar, stationsByUuid, query, country, tag]);
 
   const hasFilter = country !== "" || tag !== "" || query !== "";
 
@@ -141,6 +153,14 @@ export default function Sidebar({
             onClick={() => onViewChange("recent")}
             label={`recent ${recents.length > 0 ? `· ${recents.length}` : ""}`}
             icon={<Clock size={11} />}
+          />
+          <ViewTab
+            active={view === "similar"}
+            onClick={() => onViewChange("similar")}
+            label={`similar ${similar.length > 0 ? `· ${similar.length}` : ""}`}
+            icon={<Sparkles size={11} />}
+            disabled={!selectedUuid}
+            disabledTitle="Pick a station first, then this tab shows ones with similar tags"
           />
         </div>
       </div>
@@ -203,7 +223,9 @@ export default function Sidebar({
               ? "no starred stations yet. click the star on a station to add it."
               : view === "recent"
                 ? "no recent stations yet. pick one to start."
-                : "no stations match those filters."}
+                : view === "similar"
+                  ? "pick a station and we'll suggest others with overlapping tags."
+                  : "no stations match those filters."}
           </div>
         ) : (
           <ul>
@@ -223,6 +245,14 @@ export default function Sidebar({
                   >
                     {s.name.trim() || "(unnamed)"}
                   </span>
+                  {view === "similar" && similarScoreByUuid.has(s.stationuuid) ? (
+                    <span
+                      className="text-[10px] font-mono text-[#6a6460] flex-shrink-0"
+                      title="Cosine similarity over tag vectors"
+                    >
+                      {(similarScoreByUuid.get(s.stationuuid)! * 100).toFixed(0)}%
+                    </span>
+                  ) : null}
                   <button
                     type="button"
                     onClick={(e) => {
@@ -257,18 +287,28 @@ function ViewTab({
   onClick,
   label,
   icon,
+  disabled,
+  disabledTitle,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
   icon?: React.ReactNode;
+  disabled?: boolean;
+  disabledTitle?: string;
 }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={disabled ? disabledTitle : undefined}
       className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider transition-colors ${
-        active ? "bg-[#d4a844] text-[#0f0e0d]" : "bg-[#252320] text-[#a09890] hover:text-[#f0ede8]"
+        active
+          ? "bg-[#d4a844] text-[#0f0e0d]"
+          : disabled
+            ? "bg-[#1a1917] text-[#3a3835] cursor-not-allowed"
+            : "bg-[#252320] text-[#a09890] hover:text-[#f0ede8]"
       }`}
     >
       {icon}

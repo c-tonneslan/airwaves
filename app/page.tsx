@@ -7,6 +7,7 @@ import Player from "@/components/Player";
 import { fetchTopStations } from "@/lib/api";
 import { centroidFor, jitter } from "@/lib/centroids";
 import { useFavorites, useRecents } from "@/lib/persistent";
+import { buildSimilarityIndex, findSimilar } from "@/lib/similarity";
 import type { Station, StationDot } from "@/lib/types";
 
 // Pull initial filter and station state out of the URL on first render so
@@ -28,7 +29,10 @@ function initialFromURL() {
 }
 
 export default function HomePage() {
-  const init = initialFromURL();
+  // Compute the initial URL state once and keep it in a ref so it doesn't
+  // recompute on every render. (Reading window.location.search is cheap,
+  // but the lint rule is happier when initial state isn't a function call.)
+  const init = useMemo(() => initialFromURL(), []);
 
   const [stations, setStations] = useState<Station[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -125,14 +129,35 @@ export default function HomePage() {
     return m;
   }, [stations]);
 
-  // Globe dots respect view (starred/recent) and filters.
+  // Build the TF-IDF similarity index once per station load. The index is
+  // small (a few maps keyed by UUID and tag) so this is cheap to keep in
+  // memory and free of network or worker overhead.
+  const similarityIndex = useMemo(
+    () => (stations.length > 0 ? buildSimilarityIndex(stations) : null),
+    [stations],
+  );
+
+  // Top-20 cosine-similar stations to the currently selected one.
+  const similar = useMemo(() => {
+    if (!similarityIndex || !selectedUuid) return [];
+    return findSimilar(similarityIndex, selectedUuid, 20);
+  }, [similarityIndex, selectedUuid]);
+
+  // Derive the view to actually render. If the user is in "similar"
+  // mode but cleared their selection, fall back to "all" without writing
+  // state from inside an effect (React's lint rule rightly flags that).
+  const effectiveView = view === "similar" && !selectedUuid ? "all" : view;
+
+  // Globe dots respect view (starred/recent/similar) and filters.
   const dots = useMemo(() => {
-    const allowedUuids =
-      view === "starred"
-        ? favorites
-        : view === "recent"
-          ? new Set(recents)
-          : null;
+    let allowedUuids: Set<string> | null = null;
+    if (effectiveView === "starred") allowedUuids = favorites;
+    else if (effectiveView === "recent") allowedUuids = new Set(recents);
+    else if (effectiveView === "similar") {
+      const set = new Set(similar.map((s) => s.uuid));
+      if (selectedUuid) set.add(selectedUuid); // keep the anchor visible
+      allowedUuids = set;
+    }
 
     if (!allowedUuids && !country && !tag && !query.trim()) return allDots;
     const q = query.trim().toLowerCase();
@@ -151,7 +176,7 @@ export default function HomePage() {
       }
       return true;
     });
-  }, [allDots, view, favorites, recents, country, tag, query, stationByUuid]);
+  }, [allDots, effectiveView, favorites, recents, similar, selectedUuid, country, tag, query, stationByUuid]);
 
   // Country selection drives the globe focus.
   const focus = useMemo(() => {
@@ -230,11 +255,12 @@ export default function HomePage() {
         onCountryChange={setCountry}
         tag={tag}
         onTagChange={setTag}
-        view={view}
+        view={effectiveView}
         onViewChange={setView}
         favorites={favorites}
         onToggleFavorite={toggleFavorite}
         recents={recents}
+        similar={similar}
       />
     </div>
   );
