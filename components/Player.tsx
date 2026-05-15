@@ -83,14 +83,19 @@ export default function Player({ station, onClose }: Props) {
         }}
       >
         <audio
+          // Intentionally no `crossOrigin` attribute. Setting it (even to
+          // "anonymous") forces a CORS check on every stream URL, and most
+          // shoutcast/icecast servers don't send Access-Control-Allow-Origin,
+          // so the browser blocks the load. Without crossOrigin, the audio
+          // element treats the stream as opaque media (same model as an
+          // <img> tag) and plays it without a preflight.
           ref={audioRef}
           preload="none"
-          crossOrigin="anonymous"
           onPlaying={() => setStatus("playing")}
           onPause={() => setStatus("idle")}
           onError={() => {
             setStatus("error");
-            setError("Stream failed. Some stations geoblock or require https.");
+            setError("Stream failed. Some stations geoblock, require https, or are offline.");
           }}
         />
         <button
