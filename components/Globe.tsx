@@ -11,9 +11,10 @@ interface Props {
   dots: StationDot[];
   selectedUuid: string | null;
   onSelect: (uuid: string) => void;
+  focus?: { lat: number; lng: number; altitude?: number } | null;
 }
 
-export default function StationsGlobe({ dots, selectedUuid, onSelect }: Props) {
+export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: Props) {
   const ref = useRef<GlobeMethods | undefined>(undefined);
   const [dim, setDim] = useState({ w: 800, h: 600 });
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -59,6 +60,15 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect }: Props) {
     if (!target) return;
     g.pointOfView({ lat: target.lat, lng: target.lng, altitude: 1.6 }, 1200);
   }, [selectedUuid, dots]);
+
+  // When the parent sets a country focus, fly to its centroid and stop
+  // auto-rotation so the user can see the country sit still.
+  useEffect(() => {
+    const g = ref.current;
+    if (!g || !focus) return;
+    setInteracted(true);
+    g.pointOfView({ lat: focus.lat, lng: focus.lng, altitude: focus.altitude ?? 1.4 }, 1200);
+  }, [focus]);
 
   const pointAltitude = useMemo(
     () => (d: object) => 0.005 + (d as StationDot).weight * 0.06,

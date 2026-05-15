@@ -1,20 +1,32 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { useMemo } from "react";
+import { Search, X } from "lucide-react";
 import type { Station } from "@/lib/types";
 
 interface Props {
   stations: Station[];
   selectedUuid: string | null;
   onSelect: (uuid: string) => void;
+  query: string;
+  onQueryChange: (q: string) => void;
+  country: string;
+  onCountryChange: (c: string) => void;
+  tag: string;
+  onTagChange: (t: string) => void;
 }
 
-export default function Sidebar({ stations, selectedUuid, onSelect }: Props) {
-  const [query, setQuery] = useState("");
-  const [country, setCountry] = useState("");
-  const [tag, setTag] = useState("");
-
+export default function Sidebar({
+  stations,
+  selectedUuid,
+  onSelect,
+  query,
+  onQueryChange,
+  country,
+  onCountryChange,
+  tag,
+  onTagChange,
+}: Props) {
   const countries = useMemo(() => {
     const counts = new Map<string, number>();
     for (const s of stations) {
@@ -63,6 +75,8 @@ export default function Sidebar({ stations, selectedUuid, onSelect }: Props) {
     return list.slice(0, 500); // cap the rendered list for performance
   }, [stations, query, country, tag]);
 
+  const hasFilter = country !== "" || tag !== "" || query !== "";
+
   return (
     <aside
       className="flex flex-col h-full overflow-hidden border-l"
@@ -72,7 +86,10 @@ export default function Sidebar({ stations, selectedUuid, onSelect }: Props) {
         <div className="flex items-center gap-2">
           <span className="font-mono font-bold tracking-widest text-[#d4a844] text-sm">airwaves</span>
           <span className="text-xs text-[#6a6460]">
-            {stations.length.toLocaleString()} stations
+            {filtered.length.toLocaleString()}
+            {hasFilter ? <span className="text-[#a09890]"> of {stations.length.toLocaleString()}</span> : ""}
+            {" "}
+            stations
           </span>
         </div>
       </div>
@@ -83,7 +100,7 @@ export default function Sidebar({ stations, selectedUuid, onSelect }: Props) {
           <input
             placeholder="search stations, country, tag"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => onQueryChange(e.target.value)}
             className="w-full pl-8 pr-3 py-1.5 rounded-md bg-[#252320] border text-[#f0ede8] text-xs focus:outline-none focus:border-[#d4a844]"
             style={{ borderColor: "#3a3835" }}
           />
@@ -91,9 +108,10 @@ export default function Sidebar({ stations, selectedUuid, onSelect }: Props) {
         <div className="grid grid-cols-2 gap-2">
           <select
             value={country}
-            onChange={(e) => setCountry(e.target.value)}
+            onChange={(e) => onCountryChange(e.target.value)}
             className="px-2 py-1.5 rounded-md bg-[#252320] border text-[#f0ede8] text-xs"
-            style={{ borderColor: "#3a3835" }}
+            style={{ borderColor: country ? "#d4a844" : "#3a3835" }}
+            title="Filter by country (zooms the globe)"
           >
             <option value="">all countries</option>
             {countries.map((c) => (
@@ -102,9 +120,9 @@ export default function Sidebar({ stations, selectedUuid, onSelect }: Props) {
           </select>
           <select
             value={tag}
-            onChange={(e) => setTag(e.target.value)}
+            onChange={(e) => onTagChange(e.target.value)}
             className="px-2 py-1.5 rounded-md bg-[#252320] border text-[#f0ede8] text-xs"
-            style={{ borderColor: "#3a3835" }}
+            style={{ borderColor: tag ? "#d4a844" : "#3a3835" }}
           >
             <option value="">all genres</option>
             {tags.map((t) => (
@@ -112,6 +130,19 @@ export default function Sidebar({ stations, selectedUuid, onSelect }: Props) {
             ))}
           </select>
         </div>
+        {hasFilter && (
+          <button
+            type="button"
+            onClick={() => {
+              onQueryChange("");
+              onCountryChange("");
+              onTagChange("");
+            }}
+            className="self-start flex items-center gap-1 text-[10px] text-[#a09890] hover:text-[#d4a844]"
+          >
+            <X size={10} /> clear filters
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto">
