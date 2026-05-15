@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GlobeMethods } from "react-globe.gl";
 import type { StationDot } from "@/lib/types";
+import { terminatorPath, subsolarPoint } from "@/lib/terminator";
 
 const Globe = dynamic(() => import("react-globe.gl"), { ssr: false });
 
@@ -12,11 +13,13 @@ interface Props {
   selectedUuid: string | null;
   onSelect: (uuid: string) => void;
   focus?: { lat: number; lng: number; altitude?: number } | null;
+  focusCountryCode?: string | null;
+  heatmap?: boolean;
 }
 
 interface CountryFeature {
   type: "Feature";
-  properties: { NAME?: string; ADMIN?: string };
+  properties: { NAME?: string; ADMIN?: string; ISO_A2?: string };
   geometry: object;
 }
 
@@ -40,7 +43,14 @@ const COUNTRY_STROKE = "rgba(212,168,68,0.22)";
 const CITY_HIDE_ALT = 1.4;
 const CITY_DENSE_ALT = 0.45;
 
-export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: Props) {
+export default function StationsGlobe({
+  dots,
+  selectedUuid,
+  onSelect,
+  focus,
+  focusCountryCode,
+  heatmap = false,
+}: Props) {
   const ref = useRef<GlobeMethods | undefined>(undefined);
   const [dim, setDim] = useState({ w: 800, h: 600 });
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -48,6 +58,22 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
   const [countries, setCountries] = useState<CountryFeature[]>([]);
   const [cities, setCities] = useState<City[]>([]);
   const [altitude, setAltitude] = useState(2.0);
+  const [solarTick, setSolarTick] = useState(() => Date.now());
+
+  // Refresh the terminator every 60 seconds; the line moves ~0.25° west
+  // per minute so 60s is fine-grained enough to look "live" without
+  // forcing extra renders.
+  useEffect(() => {
+    const id = window.setInterval(() => setSolarTick(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const terminator = useMemo(() => {
+    const pts = terminatorPath(new Date(solarTick), 240);
+    return [{ coords: pts.map(([lat, lng]) => [lat, lng, 0.004] as [number, number, number]) }];
+  }, [solarTick]);
+
+  const sun = useMemo(() => subsolarPoint(new Date(solarTick)), [solarTick]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -165,10 +191,38 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
 
   // --- Country polygons ---
 
-  const polygonCapColor = useMemo(() => () => COUNTRY_CAP, []);
+  const focusedISO = (focusCountryCode || "").toUpperCase();
+  const polygonCapColor = useCallback(
+    (d: object) => {
+      const f = d as CountryFeature;
+      if (focusedISO && f.properties.ISO_A2?.toUpperCase() === focusedISO) {
+        return "rgba(212,168,68,0.18)";
+      }
+      return COUNTRY_CAP;
+    },
+    [focusedISO],
+  );
   const polygonSideColor = useMemo(() => () => "rgba(0,0,0,0)", []);
-  const polygonStrokeColor = useMemo(() => () => COUNTRY_STROKE, []);
-  const polygonAltitude = useMemo(() => () => 0.0025, []);
+  const polygonStrokeColor = useCallback(
+    (d: object) => {
+      const f = d as CountryFeature;
+      if (focusedISO && f.properties.ISO_A2?.toUpperCase() === focusedISO) {
+        return "rgba(212,168,68,0.85)";
+      }
+      return COUNTRY_STROKE;
+    },
+    [focusedISO],
+  );
+  const polygonAltitude = useCallback(
+    (d: object) => {
+      const f = d as CountryFeature;
+      if (focusedISO && f.properties.ISO_A2?.toUpperCase() === focusedISO) {
+        return 0.012; // lift the focused country slightly for emphasis
+      }
+      return 0.0025;
+    },
+    [focusedISO],
+  );
 
   // --- City labels ---
 
@@ -195,7 +249,7 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     () => (selectedStation ? [selectedStation] : []),
     [selectedStation],
   );
-  const htmlElement = useCallback((d: object) => {
+  const htmlElement = useCallback((d: object): HTMLElement => {
     const dot = d as StationDot;
     const el = document.createElement("div");
     el.style.cssText = `
@@ -250,8 +304,9 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
         polygonStrokeColor={polygonStrokeColor}
         polygonAltitude={polygonAltitude}
         // Station dots (the selected one is rendered separately as an
-        // HTML pin, so it doesn't show up in this layer).
-        pointsData={dots}
+        // HTML pin, so it doesn't show up in this layer). Hidden when
+        // the heatmap is on.
+        pointsData={heatmap ? [] : dots}
         pointLat={(d) => (d as StationDot).lat}
         pointLng={(d) => (d as StationDot).lng}
         pointAltitude={pointAltitude}
@@ -260,6 +315,33 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
         pointResolution={3}
         pointLabel={pointLabel}
         onPointClick={(d) => onSelect((d as StationDot).uuid)}
+        // Heatmap mode: aggregate stations into hex bins and visualise
+        // station density. globe.gl handles the hex grid math; we just
+        // give it the dots and a bin resolution.
+        hexBinPointsData={heatmap ? dots : []}
+        hexBinPointLat={(d) => (d as StationDot).lat}
+        hexBinPointLng={(d) => (d as StationDot).lng}
+        hexBinPointWeight={() => 1}
+        hexBinResolution={4}
+        hexBinMerge={false}
+        hexAltitude={(d) => {
+          const points = (d as { points: StationDot[] }).points;
+          return 0.005 + Math.min(0.18, Math.log10(points.length + 1) * 0.06);
+        }}
+        hexTopColor={(d) => {
+          const n = (d as { points: StationDot[] }).points.length;
+          const t = Math.min(1, Math.log10(n + 1) / Math.log10(60));
+          const alpha = 0.45 + 0.5 * t;
+          return `rgba(212,168,68,${alpha.toFixed(3)})`;
+        }}
+        hexSideColor={() => "rgba(212,168,68,0.25)"}
+        hexLabel={(d) => {
+          const points = (d as { points: StationDot[] }).points;
+          return `<div style="font-family:Space Mono,monospace;background:#0f0e0d;border:1px solid #3a3835;color:#f0ede8;padding:6px 10px;border-radius:6px;font-size:11px;">
+            <div style="color:#d4a844;font-weight:700;">${points.length} stations</div>
+            <div style="color:#a09890;font-size:10px;">${escapeHtml(points[0]?.country ?? "")}</div>
+          </div>`;
+        }}
         // City labels (revealed progressively as the camera zooms in).
         labelsData={visibleCities}
         labelLat={(d) => (d as City).lat}
@@ -270,16 +352,44 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
         labelColor={() => "rgba(240,237,232,0.78)"}
         labelResolution={2}
         labelAltitude={0.01}
-        // HTML pin for the selected station.
-        htmlElementsData={htmlElementsData}
-        htmlLat={(d) => (d as StationDot).lat}
-        htmlLng={(d) => (d as StationDot).lng}
-        htmlAltitude={0.04}
-        htmlElement={htmlElement}
+        // HTML pin for the selected station, plus a small "☀" marker
+        // at the subsolar point.
+        htmlElementsData={[...htmlElementsData, { _sun: true, lat: sun.lat, lng: sun.lng }]}
+        htmlLat={(d) => (d as { lat: number }).lat}
+        htmlLng={(d) => (d as { lng: number }).lng}
+        htmlAltitude={(d) => ((d as { _sun?: boolean })._sun ? 0.015 : 0.04)}
+        htmlElement={(d) => {
+          if ((d as { _sun?: boolean })._sun) return sunElement();
+          return htmlElement(d);
+        }}
+        // Terminator line (day/night divider).
+        pathsData={terminator}
+        pathPoints={(d) => (d as { coords: [number, number, number][] }).coords}
+        pathPointLat={(p) => (p as [number, number, number])[0]}
+        pathPointLng={(p) => (p as [number, number, number])[1]}
+        pathPointAlt={(p) => (p as [number, number, number])[2]}
+        pathColor={() => ["rgba(212,168,68,0.0)", "rgba(212,168,68,0.55)"]}
+        pathStroke={0.6}
+        pathDashLength={0.01}
+        pathDashGap={0.005}
+        pathDashAnimateTime={12_000}
         animateIn
       />
     </div>
   );
+}
+
+function sunElement(): HTMLElement {
+  const el = document.createElement("div");
+  el.style.cssText = `
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fff7d6, #f7c948 55%, transparent 70%);
+    box-shadow: 0 0 18px 6px rgba(247,201,72,0.45);
+  `;
+  return el;
 }
 
 function escapeHtml(s: string): string {

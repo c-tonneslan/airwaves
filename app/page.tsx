@@ -56,6 +56,8 @@ export default function HomePage() {
   const [vibeStatus, setVibeStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [vibeError, setVibeError] = useState<string | null>(null);
 
+  const [heatmap, setHeatmap] = useState(false);
+
   const onVibeSearch = async (q: string) => {
     setVibeStatus("loading");
     setVibeError(null);
@@ -200,7 +202,7 @@ export default function HomePage() {
     });
   }, [allDots, effectiveView, favorites, recents, similar, vibeResults, selectedUuid, country, tag, query, stationByUuid]);
 
-  // Country selection drives the globe focus.
+  // Country selection drives the globe focus and the polygon highlight.
   const focus = useMemo(() => {
     if (!country) return null;
     const sample = stations.find((s) => s.country === country);
@@ -218,6 +220,18 @@ export default function HomePage() {
     return { lat, lng, altitude: 1.0 };
   }, [country, stations, dots]);
 
+  // ISO-2 country code of whatever the user has picked, so the globe can
+  // brighten that one polygon. Falls back to the playing station's
+  // country when nothing is filter-selected.
+  const focusCountryCode = useMemo(() => {
+    if (country) {
+      const s = stations.find((x) => x.country === country);
+      return s?.countrycode ?? null;
+    }
+    if (playing?.countrycode) return playing.countrycode;
+    return null;
+  }, [country, stations, playing]);
+
   const onSelect = (uuid: string) => {
     setSelectedUuid(uuid);
     const s = stations.find((s) => s.stationuuid === uuid);
@@ -227,7 +241,14 @@ export default function HomePage() {
   return (
     <div className="fixed inset-0 grid" style={{ gridTemplateColumns: "1fr 360px" }}>
       <div className="relative">
-        <StationsGlobe dots={dots} selectedUuid={selectedUuid} onSelect={onSelect} focus={focus} />
+        <StationsGlobe
+          dots={dots}
+          selectedUuid={selectedUuid}
+          onSelect={onSelect}
+          focus={focus}
+          focusCountryCode={focusCountryCode}
+          heatmap={heatmap}
+        />
 
         {loading && (
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-[#a09890] text-sm font-mono pointer-events-none">
@@ -246,14 +267,30 @@ export default function HomePage() {
           </div>
         </div>
 
-        <a
-          href="https://github.com/c-tonneslan/airwaves"
-          target="_blank"
-          rel="noreferrer"
-          className="absolute top-4 right-4 z-10 text-xs text-[#a09890] hover:text-[#d4a844] font-mono"
-        >
-          source
-        </a>
+        <div className="absolute top-4 right-4 z-10 flex items-center gap-3 text-xs font-mono">
+          <button
+            type="button"
+            onClick={() => setHeatmap((h) => !h)}
+            className="px-2.5 py-1 rounded-md border transition-colors"
+            style={{
+              background: heatmap ? "rgba(212,168,68,0.18)" : "rgba(26,25,23,0.7)",
+              borderColor: heatmap ? "#d4a844" : "#3a3835",
+              color: heatmap ? "#d4a844" : "#a09890",
+              backdropFilter: "blur(10px)",
+            }}
+            title="Toggle heatmap of station density"
+          >
+            {heatmap ? "● heatmap" : "○ heatmap"}
+          </button>
+          <a
+            href="https://github.com/c-tonneslan/airwaves"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[#a09890] hover:text-[#d4a844]"
+          >
+            source
+          </a>
+        </div>
 
         {playing ? <ShowPanel station={playing} /> : null}
 

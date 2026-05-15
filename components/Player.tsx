@@ -131,11 +131,12 @@ export default function Player({
               ♪ {nowPlaying.title}
             </div>
           ) : null}
-          <div className="text-[11px] text-[#a09890] font-mono truncate">
-            {station.country}
-            {station.bitrate ? <span className="text-[#6a6460]"> · {station.bitrate} kbps</span> : null}
-            {status === "loading" ? <span className="text-[#d4a844]"> · connecting…</span> : null}
-            {status === "error" ? <span className="text-[#c45a3a]"> · {error ?? "error"}</span> : null}
+          <div className="text-[11px] text-[#a09890] font-mono truncate flex items-center gap-1.5">
+            <HealthBadge station={station} />
+            <span>{station.country}</span>
+            {station.bitrate ? <span className="text-[#6a6460]">· {station.bitrate} kbps</span> : null}
+            {status === "loading" ? <span className="text-[#d4a844]">· connecting…</span> : null}
+            {status === "error" ? <span className="text-[#c45a3a]">· {error ?? "error"}</span> : null}
           </div>
         </div>
 
@@ -212,6 +213,36 @@ function Pulse({ playing }: { playing: boolean }) {
       `}</style>
     </div>
   );
+}
+
+// Small colored dot + relative-time tag derived from Radio Browser's
+// health fields. The directory's monitoring fleet pings every station
+// every ~30 minutes and records whether the last check passed.
+function HealthBadge({ station }: { station: Station }) {
+  if (station.lastchecktime == null && station.lastcheckoktime == null) return null;
+  const ok = station.lastcheckok === 1;
+  const ref = ok ? station.lastchecktime : station.lastcheckoktime;
+  const color = ok ? "#3a9e8a" : "#c45a3a";
+  return (
+    <span className="flex items-center gap-1" title={ok ? "Last health check passed" : "Last health check failed"}>
+      <span
+        className="inline-block rounded-full"
+        style={{ width: 6, height: 6, background: color, boxShadow: `0 0 6px ${color}66` }}
+      />
+      <span className="text-[#6a6460]">{ok ? "ok" : "stale"} · {relativeTime(ref)}</span>
+    </span>
+  );
+}
+
+function relativeTime(iso?: string): string {
+  if (!iso) return "?";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "?";
+  const diffSec = Math.max(0, (Date.now() - then) / 1000);
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
 function humanError(err: unknown): string {

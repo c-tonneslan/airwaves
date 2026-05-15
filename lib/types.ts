@@ -16,6 +16,10 @@ export interface Station {
   codec: string;
   favicon?: string;
   homepage?: string;
+  // Health fields surfaced by Radio Browser's monitoring fleet.
+  lastcheckok?: 0 | 1;
+  lastchecktime?: string; // ISO timestamp of most recent check
+  lastcheckoktime?: string; // ISO timestamp of most recent successful check
 }
 
 export interface StationDot {
