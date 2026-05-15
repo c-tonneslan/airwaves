@@ -24,8 +24,21 @@ interface CountryFC {
   features: CountryFeature[];
 }
 
+interface City {
+  name: string;
+  lat: number;
+  lng: number;
+  rank: number;
+  pop: number;
+}
+
 const COUNTRY_CAP = "rgba(212,168,68,0.03)";
 const COUNTRY_STROKE = "rgba(212,168,68,0.22)";
+
+// Altitude thresholds for what shows up. Below the lower number, we
+// reveal denser city labels; above the upper one we hide labels entirely.
+const CITY_HIDE_ALT = 1.4;
+const CITY_DENSE_ALT = 0.45;
 
 export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: Props) {
   const ref = useRef<GlobeMethods | undefined>(undefined);
@@ -33,12 +46,9 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [interacted, setInteracted] = useState(false);
   const [countries, setCountries] = useState<CountryFeature[]>([]);
-  // Camera altitude. Stays in sync with controls so we can scale markers
-  // when the camera zooms in (smaller dots so they don't cover everything
-  // at close range) and out (slightly larger so they're not pinpricks).
+  const [cities, setCities] = useState<City[]>([]);
   const [altitude, setAltitude] = useState(2.0);
 
-  // Resize observer keeps the globe sized to its container.
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
@@ -51,15 +61,17 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     return () => ro.disconnect();
   }, []);
 
-  // Load country outlines once on the client. We render them as nearly
-  // invisible polygon caps (just for the stroke), which gives crisp
-  // vector borders that don't pixelate as you zoom in.
+  // Load country outlines and cities once on the client.
   useEffect(() => {
     let cancelled = false;
-    fetch("/countries.geojson")
-      .then((r) => r.json() as Promise<CountryFC>)
-      .then((d) => {
-        if (!cancelled) setCountries(d.features);
+    Promise.all([
+      fetch("/countries.geojson").then((r) => r.json() as Promise<CountryFC>),
+      fetch("/cities.json").then((r) => r.json() as Promise<City[]>),
+    ])
+      .then(([world, cs]) => {
+        if (cancelled) return;
+        setCountries(world.features);
+        setCities(cs);
       })
       .catch(() => {});
     return () => {
@@ -67,9 +79,7 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     };
   }, []);
 
-  // Configure the orbit controls once: relaxed zoom range so users can
-  // get much closer than globe.gl's default, slow auto-rotate until the
-  // user interacts.
+  // Orbit controls: deep zoom, gentle autorotate.
   useEffect(() => {
     const g = ref.current;
     if (!g) return;
@@ -84,30 +94,20 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     };
     controls.autoRotate = !interacted;
     controls.autoRotateSpeed = 0.25;
-    // Default is around 200; bring it down so the camera can essentially
-    // sit right above the ground. The Earth has unit radius 100 in the
-    // globe.gl coordinate system, so a distance of 101 means "1 unit
-    // above the surface."
     controls.minDistance = 105;
     controls.maxDistance = 800;
     controls.zoomSpeed = 0.9;
     controls.rotateSpeed = 0.8;
-
     const onStart = () => setInteracted(true);
     controls.addEventListener?.("start", onStart);
   }, [interacted]);
 
-  // Track camera altitude (distance over surface) so we can scale markers
-  // and cull when zoomed in/out. globe.gl exposes pointOfView() for
-  // reads as well as writes.
+  // Poll camera altitude so label/marker scaling can react to zoom.
   useEffect(() => {
     const g = ref.current;
     if (!g) return;
     const tick = () => {
       const pov = g.pointOfView();
-      // pov.altitude is in radii-of-earth units (1.0 == one earth radius
-      // above the surface). globe.gl docs are a little ambiguous; we just
-      // use whatever value we read and treat it as a relative scale.
       if (Math.abs(pov.altitude - altitude) > 0.02) {
         setAltitude(pov.altitude);
       }
@@ -116,7 +116,7 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     return () => window.clearInterval(id);
   }, [altitude]);
 
-  // When the parent picks a station, fly to it.
+  // Fly to selected station.
   useEffect(() => {
     const g = ref.current;
     if (!g || !selectedUuid) return;
@@ -125,7 +125,7 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     g.pointOfView({ lat: target.lat, lng: target.lng, altitude: 0.4 }, 1200);
   }, [selectedUuid, dots]);
 
-  // When a country focus is set from the sidebar dropdown.
+  // Fly to country focus.
   useEffect(() => {
     const g = ref.current;
     if (!g || !focus) return;
@@ -133,29 +133,24 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     g.pointOfView({ lat: focus.lat, lng: focus.lng, altitude: focus.altitude ?? 1.0 }, 1200);
   }, [focus]);
 
-  // Marker scaling functions. Closer camera → smaller dots so they don't
-  // crowd; farther camera → slightly larger so they remain hit-targets.
-  const pointAltitude = useMemo(
-    () => () => 0.003,
-    [],
-  );
+  // --- Marker scaling ---
+
+  const pointAltitude = useMemo(() => () => 0.003, []);
   const pointRadius = useCallback(
     (d: object) => {
       const dot = d as StationDot;
-      // base radius shrinks as the camera approaches the ground
       const zoomScale = Math.max(0.25, Math.min(1.0, altitude / 1.5));
       const base = (0.12 + dot.weight * 0.35) * zoomScale;
-      return dot.uuid === selectedUuid ? base * 2.0 : base;
+      // The selected station gets its own HTML pin overlay (below), so
+      // we hide its 3D sphere to avoid the duplication.
+      if (dot.uuid === selectedUuid) return 0;
+      return base;
     },
     [altitude, selectedUuid],
   );
   const pointColor = useCallback(
-    (d: object) => {
-      const dot = d as StationDot;
-      if (dot.uuid === selectedUuid) return "#f0ede8";
-      return interpolateGold(dot.weight);
-    },
-    [selectedUuid],
+    (d: object) => interpolateGold((d as StationDot).weight),
+    [],
   );
   const pointLabel = useMemo(
     () => (d: object) => {
@@ -168,11 +163,72 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
     [],
   );
 
-  // Polygon styling is static; memoize to avoid re-renders.
+  // --- Country polygons ---
+
   const polygonCapColor = useMemo(() => () => COUNTRY_CAP, []);
   const polygonSideColor = useMemo(() => () => "rgba(0,0,0,0)", []);
   const polygonStrokeColor = useMemo(() => () => COUNTRY_STROKE, []);
   const polygonAltitude = useMemo(() => () => 0.0025, []);
+
+  // --- City labels ---
+
+  // Cull the city list to keep label rendering snappy. At wide zoom we
+  // show nothing (the texture handles the impression of cities); when
+  // you fly in we reveal increasingly granular names.
+  const visibleCities = useMemo<City[]>(() => {
+    if (altitude > CITY_HIDE_ALT || cities.length === 0) return [];
+    // rank 0 is the biggest cities; rank 9 is the smallest. Map altitude
+    // to a cutoff so close zoom shows everything and a wider zoom only
+    // shows the global mega-cities.
+    const t = Math.max(0, Math.min(1, (CITY_HIDE_ALT - altitude) / (CITY_HIDE_ALT - CITY_DENSE_ALT)));
+    const maxRank = Math.round(1 + t * 8);
+    return cities.filter((c) => c.rank <= maxRank);
+  }, [altitude, cities]);
+
+  // --- HTML pin for the currently selected station ---
+
+  const selectedStation = useMemo(
+    () => (selectedUuid ? dots.find((d) => d.uuid === selectedUuid) : undefined),
+    [selectedUuid, dots],
+  );
+  const htmlElementsData = useMemo(
+    () => (selectedStation ? [selectedStation] : []),
+    [selectedStation],
+  );
+  const htmlElement = useCallback((d: object) => {
+    const dot = d as StationDot;
+    const el = document.createElement("div");
+    el.style.cssText = `
+      pointer-events: none;
+      position: relative;
+      transform: translate(-50%, -100%);
+      font-family: Space Mono, monospace;
+    `;
+    el.innerHTML = `
+      <div style="
+        background:#0f0e0d;
+        border:1px solid #d4a844;
+        color:#d4a844;
+        padding:4px 10px;
+        border-radius:999px;
+        font-size:11px;
+        font-weight:700;
+        white-space:nowrap;
+        box-shadow:0 4px 16px rgba(0,0,0,0.6), 0 0 0 4px rgba(212,168,68,0.12);
+      ">
+        ● ${escapeHtml(dot.name)}
+      </div>
+      <div style="
+        width:0; height:0;
+        border-left:6px solid transparent;
+        border-right:6px solid transparent;
+        border-top:8px solid #d4a844;
+        margin:0 auto;
+        filter: drop-shadow(0 2px 2px rgba(0,0,0,0.4));
+      "></div>
+    `;
+    return el;
+  }, []);
 
   return (
     <div ref={containerRef} className="absolute inset-0 overflow-hidden">
@@ -184,16 +240,17 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
         showAtmosphere
         atmosphereColor="#d4a844"
         atmosphereAltitude={0.15}
-        globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
-        // Country outlines: vector, crisp at any zoom level. The cap is
-        // basically invisible (3% alpha) but lets globe.gl's stroke
-        // pipeline render the borders.
+        // Higher-resolution night-side Earth (NASA Black Marble 2012,
+        // 3600x1800), self-hosted so we're not relying on a third-party CDN.
+        globeImageUrl="/earth-night.jpg"
+        // Country outlines
         polygonsData={countries}
         polygonCapColor={polygonCapColor}
         polygonSideColor={polygonSideColor}
         polygonStrokeColor={polygonStrokeColor}
         polygonAltitude={polygonAltitude}
-        // Station markers as 3D spheres.
+        // Station dots (the selected one is rendered separately as an
+        // HTML pin, so it doesn't show up in this layer).
         pointsData={dots}
         pointLat={(d) => (d as StationDot).lat}
         pointLng={(d) => (d as StationDot).lng}
@@ -203,6 +260,22 @@ export default function StationsGlobe({ dots, selectedUuid, onSelect, focus }: P
         pointResolution={3}
         pointLabel={pointLabel}
         onPointClick={(d) => onSelect((d as StationDot).uuid)}
+        // City labels (revealed progressively as the camera zooms in).
+        labelsData={visibleCities}
+        labelLat={(d) => (d as City).lat}
+        labelLng={(d) => (d as City).lng}
+        labelText={(d) => (d as City).name}
+        labelSize={() => 0.18 + (1.5 - Math.min(altitude, 1.5)) * 0.18}
+        labelDotRadius={0.05}
+        labelColor={() => "rgba(240,237,232,0.78)"}
+        labelResolution={2}
+        labelAltitude={0.01}
+        // HTML pin for the selected station.
+        htmlElementsData={htmlElementsData}
+        htmlLat={(d) => (d as StationDot).lat}
+        htmlLng={(d) => (d as StationDot).lng}
+        htmlAltitude={0.04}
+        htmlElement={htmlElement}
         animateIn
       />
     </div>
