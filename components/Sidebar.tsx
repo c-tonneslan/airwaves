@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { Search, X, Star, Clock, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Search, X, Star, Clock, Sparkles, Wand2, ArrowRight, Loader } from "lucide-react";
 import type { Station } from "@/lib/types";
 import type { SimilarStation } from "@/lib/similarity";
 
@@ -21,9 +21,13 @@ interface Props {
   onToggleFavorite: (uuid: string) => void;
   recents: string[];
   similar: SimilarStation[];
+  vibeResults: { uuid: string; score: number }[];
+  vibeStatus: "idle" | "loading" | "ready" | "error";
+  vibeError: string | null;
+  onVibeSearch: (query: string) => void;
 }
 
-export type ViewMode = "all" | "starred" | "recent" | "similar";
+export type ViewMode = "all" | "starred" | "recent" | "similar" | "vibe";
 
 export default function Sidebar({
   stations,
@@ -41,12 +45,24 @@ export default function Sidebar({
   onToggleFavorite,
   recents,
   similar,
+  vibeResults,
+  vibeStatus,
+  vibeError,
+  onVibeSearch,
 }: Props) {
   const similarScoreByUuid = useMemo(() => {
     const m = new Map<string, number>();
     for (const s of similar) m.set(s.uuid, s.score);
     return m;
   }, [similar]);
+
+  const vibeScoreByUuid = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const v of vibeResults) m.set(v.uuid, v.score);
+    return m;
+  }, [vibeResults]);
+
+  const [vibeQuery, setVibeQuery] = useState("");
   const stationsByUuid = useMemo(() => {
     const m = new Map<string, Station>();
     for (const s of stations) m.set(s.stationuuid, s);
@@ -98,6 +114,10 @@ export default function Sidebar({
       base = similar
         .map((s) => stationsByUuid.get(s.uuid))
         .filter((s): s is Station => Boolean(s));
+    } else if (view === "vibe") {
+      base = vibeResults
+        .map((s) => stationsByUuid.get(s.uuid))
+        .filter((s): s is Station => Boolean(s));
     } else {
       base = stations;
     }
@@ -119,7 +139,7 @@ export default function Sidebar({
       );
     }
     return list.slice(0, 500);
-  }, [stations, view, favorites, recents, similar, stationsByUuid, query, country, tag]);
+  }, [stations, view, favorites, recents, similar, vibeResults, stationsByUuid, query, country, tag]);
 
   const hasFilter = country !== "" || tag !== "" || query !== "";
 
@@ -162,9 +182,28 @@ export default function Sidebar({
             disabled={!selectedUuid}
             disabledTitle="Pick a station first, then this tab shows ones with similar tags"
           />
+          <ViewTab
+            active={view === "vibe"}
+            onClick={() => onViewChange("vibe")}
+            label="vibe"
+            icon={<Wand2 size={11} />}
+          />
         </div>
       </div>
 
+      {view === "vibe" ? (
+        <VibePanel
+          query={vibeQuery}
+          setQuery={setVibeQuery}
+          status={vibeStatus}
+          error={vibeError}
+          onSubmit={() => {
+            const q = vibeQuery.trim();
+            if (q.length > 0) onVibeSearch(q);
+          }}
+          resultCount={vibeResults.length}
+        />
+      ) : (
       <div className="px-4 py-3 flex flex-col gap-2.5 border-b" style={{ borderColor: "#3a3835" }}>
         <div className="relative">
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#6a6460]" />
@@ -215,6 +254,7 @@ export default function Sidebar({
           </button>
         )}
       </div>
+      )}
 
       <div className="flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
@@ -225,7 +265,9 @@ export default function Sidebar({
                 ? "no recent stations yet. pick one to start."
                 : view === "similar"
                   ? "pick a station and we'll suggest others with overlapping tags."
-                  : "no stations match those filters."}
+                  : view === "vibe"
+                    ? "describe a vibe above and hit enter."
+                    : "no stations match those filters."}
           </div>
         ) : (
           <ul>
@@ -251,6 +293,14 @@ export default function Sidebar({
                       title="Cosine similarity over tag vectors"
                     >
                       {(similarScoreByUuid.get(s.stationuuid)! * 100).toFixed(0)}%
+                    </span>
+                  ) : null}
+                  {view === "vibe" && vibeScoreByUuid.has(s.stationuuid) ? (
+                    <span
+                      className="text-[10px] font-mono text-[#6a6460] flex-shrink-0"
+                      title="Semantic similarity to your query"
+                    >
+                      {(vibeScoreByUuid.get(s.stationuuid)! * 100).toFixed(0)}%
                     </span>
                   ) : null}
                   <button
@@ -279,6 +329,68 @@ export default function Sidebar({
         )}
       </div>
     </aside>
+  );
+}
+
+function VibePanel({
+  query,
+  setQuery,
+  status,
+  error,
+  onSubmit,
+  resultCount,
+}: {
+  query: string;
+  setQuery: (q: string) => void;
+  status: "idle" | "loading" | "ready" | "error";
+  error: string | null;
+  onSubmit: () => void;
+  resultCount: number;
+}) {
+  return (
+    <div className="px-4 py-3 flex flex-col gap-2 border-b" style={{ borderColor: "#3a3835" }}>
+      <div className="text-[10px] uppercase tracking-widest font-mono text-[#a09890]">
+        ✨ vibe search
+      </div>
+      <div className="text-[10px] text-[#6a6460] leading-snug">
+        Describe what you want to hear. We embed your phrase into a sentence vector and find stations whose names, countries, and tags semantically match. Model runs locally in your browser; first search downloads ~25 MB and takes a few seconds.
+      </div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit();
+        }}
+        className="flex gap-2"
+      >
+        <input
+          autoFocus
+          placeholder="warm late-night dub from somewhere coastal"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="flex-1 px-2.5 py-1.5 rounded-md bg-[#252320] border text-[#f0ede8] text-xs focus:outline-none focus:border-[#d4a844]"
+          style={{ borderColor: "#3a3835" }}
+        />
+        <button
+          type="submit"
+          disabled={status === "loading" || query.trim().length === 0}
+          className="px-2.5 py-1.5 rounded-md bg-[#d4a844] text-[#0f0e0d] flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+          aria-label="search"
+        >
+          {status === "loading" ? <Loader size={12} className="animate-spin" /> : <ArrowRight size={12} />}
+        </button>
+      </form>
+      {status === "loading" ? (
+        <div className="text-[10px] text-[#a09890] font-mono">
+          embedding query…
+        </div>
+      ) : status === "error" ? (
+        <div className="text-[10px] text-[#c45a3a] font-mono">{error ?? "search failed"}</div>
+      ) : status === "ready" && resultCount > 0 ? (
+        <div className="text-[10px] text-[#a09890] font-mono">
+          {resultCount} stations match this vibe
+        </div>
+      ) : null}
+    </div>
   );
 }
 

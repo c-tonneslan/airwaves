@@ -4,10 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import StationsGlobe from "@/components/Globe";
 import Sidebar, { type ViewMode } from "@/components/Sidebar";
 import Player from "@/components/Player";
+import ShowPanel from "@/components/ShowPanel";
 import { fetchTopStations } from "@/lib/api";
 import { centroidFor, jitter } from "@/lib/centroids";
 import { useFavorites, useRecents } from "@/lib/persistent";
 import { buildSimilarityIndex, findSimilar } from "@/lib/similarity";
+import { semanticSearch } from "@/lib/semantic";
 import type { Station, StationDot } from "@/lib/types";
 
 // Pull initial filter and station state out of the URL on first render so
@@ -19,12 +21,13 @@ function initialFromURL() {
   }
   const sp = new URLSearchParams(window.location.search);
   const view = sp.get("view") as ViewMode | null;
+  const validViews: ViewMode[] = ["all", "starred", "recent", "similar", "vibe"];
   return {
     country: sp.get("country") ?? "",
     tag: sp.get("tag") ?? "",
     query: sp.get("q") ?? "",
     selected: sp.get("s"),
-    view: view === "starred" || view === "recent" ? view : ("all" as ViewMode),
+    view: view && validViews.includes(view) ? view : ("all" as ViewMode),
   };
 }
 
@@ -48,6 +51,23 @@ export default function HomePage() {
 
   const { favorites, toggleFavorite, isFavorite } = useFavorites();
   const { recents, recordPlay } = useRecents();
+
+  const [vibeResults, setVibeResults] = useState<{ uuid: string; score: number }[]>([]);
+  const [vibeStatus, setVibeStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [vibeError, setVibeError] = useState<string | null>(null);
+
+  const onVibeSearch = async (q: string) => {
+    setVibeStatus("loading");
+    setVibeError(null);
+    try {
+      const results = await semanticSearch(q, 30);
+      setVibeResults(results);
+      setVibeStatus("ready");
+    } catch (err) {
+      setVibeError(err instanceof Error ? err.message : "search failed");
+      setVibeStatus("error");
+    }
+  };
 
   // Fetch stations once on mount. If the URL named a station, tune it in
   // the same moment we have the catalog so the player and globe focus are
@@ -148,7 +168,7 @@ export default function HomePage() {
   // state from inside an effect (React's lint rule rightly flags that).
   const effectiveView = view === "similar" && !selectedUuid ? "all" : view;
 
-  // Globe dots respect view (starred/recent/similar) and filters.
+  // Globe dots respect view (starred/recent/similar/vibe) and filters.
   const dots = useMemo(() => {
     let allowedUuids: Set<string> | null = null;
     if (effectiveView === "starred") allowedUuids = favorites;
@@ -157,6 +177,8 @@ export default function HomePage() {
       const set = new Set(similar.map((s) => s.uuid));
       if (selectedUuid) set.add(selectedUuid); // keep the anchor visible
       allowedUuids = set;
+    } else if (effectiveView === "vibe") {
+      allowedUuids = new Set(vibeResults.map((r) => r.uuid));
     }
 
     if (!allowedUuids && !country && !tag && !query.trim()) return allDots;
@@ -176,7 +198,7 @@ export default function HomePage() {
       }
       return true;
     });
-  }, [allDots, effectiveView, favorites, recents, similar, selectedUuid, country, tag, query, stationByUuid]);
+  }, [allDots, effectiveView, favorites, recents, similar, vibeResults, selectedUuid, country, tag, query, stationByUuid]);
 
   // Country selection drives the globe focus.
   const focus = useMemo(() => {
@@ -233,6 +255,8 @@ export default function HomePage() {
           source
         </a>
 
+        {playing ? <ShowPanel station={playing} /> : null}
+
         <Player
           station={playing}
           onClose={() => {
@@ -261,6 +285,10 @@ export default function HomePage() {
         onToggleFavorite={toggleFavorite}
         recents={recents}
         similar={similar}
+        vibeResults={vibeResults}
+        vibeStatus={vibeStatus}
+        vibeError={vibeError}
+        onVibeSearch={onVibeSearch}
       />
     </div>
   );
