@@ -9,7 +9,7 @@ const MIRRORS = [
   "https://nl1.api.radio-browser.info",
 ];
 
-const CACHE_KEY = "airwaves.stations.v1";
+const CACHE_KEY = "airwaves.stations.v2";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
 
 interface CachedPayload {
@@ -33,7 +33,10 @@ export async function fetchTopStations(limit = 5000): Promise<Station[]> {
   }
 
   const params = new URLSearchParams({
-    has_geo_info: "true",
+    // Don't require geo info up front. Lots of well-known stations (NTS,
+    // KEXP, BBC, etc.) are in the directory without coordinates, and we
+    // fall back to country centroids in the page so they still appear
+    // on the globe.
     hidebroken: "true",
     order: "clickcount",
     reverse: "true",

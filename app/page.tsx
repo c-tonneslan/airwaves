@@ -5,6 +5,7 @@ import StationsGlobe from "@/components/Globe";
 import Sidebar from "@/components/Sidebar";
 import Player from "@/components/Player";
 import { fetchTopStations } from "@/lib/api";
+import { centroidFor, jitter } from "@/lib/centroids";
 import type { Station, StationDot } from "@/lib/types";
 
 export default function HomePage() {
@@ -32,23 +33,38 @@ export default function HomePage() {
     };
   }, []);
 
-  // Compute the dots once. We cap at 2,500 to keep the globe smooth, and
-  // dedup by (lat, lng) so co-located stations don't overdraw — clicking
-  // a dot still opens the most-popular station at that location.
+  // Compute the dots once. We cap at 2,500 to keep the globe smooth.
+  // Stations without explicit coordinates get placed at their country
+  // centroid with a small jitter so a popular country isn't a single
+  // brick of overlapping dots.
   const dots = useMemo<StationDot[]>(() => {
     const max = Math.min(stations.length, 2500);
     const head = stations.slice(0, max);
     const maxClicks = head.reduce((m, s) => Math.max(m, s.clickcount || 0), 1);
-    return head
-      .filter((s) => s.geo_lat != null && s.geo_long != null)
-      .map((s) => ({
-        lat: s.geo_lat,
-        lng: s.geo_long,
+    const out: StationDot[] = [];
+    for (const s of head) {
+      let lat: number;
+      let lng: number;
+      if (s.geo_lat != null && s.geo_long != null) {
+        lat = s.geo_lat;
+        lng = s.geo_long;
+      } else {
+        const centroid = centroidFor(s.countrycode);
+        if (!centroid) continue; // unknown country, drop the station
+        const jittered = jitter(centroid, s.stationuuid, 2.5);
+        lat = jittered[0];
+        lng = jittered[1];
+      }
+      out.push({
+        lat,
+        lng,
         uuid: s.stationuuid,
         name: s.name.trim() || "(unnamed)",
         country: s.country,
         weight: Math.min(1, Math.log(1 + s.clickcount) / Math.log(1 + maxClicks)),
-      }));
+      });
+    }
+    return out;
   }, [stations]);
 
   const onSelect = (uuid: string) => {
