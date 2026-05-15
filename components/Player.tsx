@@ -1,22 +1,34 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Pause, Play, X, ExternalLink, Volume2 } from "lucide-react";
+import { Pause, Play, X, ExternalLink, Volume2, Star } from "lucide-react";
 import type { Station } from "@/lib/types";
 import { reportPlay } from "@/lib/api";
+import { useNowPlaying } from "@/lib/now-playing";
 
 interface Props {
   station: Station | null;
   onClose: () => void;
+  isFavorite: boolean;
+  onToggleFavorite: (uuid: string) => void;
+  onPlayStart?: (uuid: string) => void;
 }
 
 type PlayerStatus = "idle" | "loading" | "playing" | "error";
 
-export default function Player({ station, onClose }: Props) {
+export default function Player({
+  station,
+  onClose,
+  isFavorite,
+  onToggleFavorite,
+  onPlayStart,
+}: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [status, setStatus] = useState<PlayerStatus>("idle");
   const [volume, setVolume] = useState(0.8);
   const [error, setError] = useState<string | null>(null);
+
+  const nowPlaying = useNowPlaying(station?.url_resolved ?? null, status === "playing");
 
   // When a new station arrives, replace the audio source and start playing.
   useEffect(() => {
@@ -32,6 +44,7 @@ export default function Player({ station, onClose }: Props) {
       () => {
         setStatus("playing");
         reportPlay(station.stationuuid);
+        onPlayStart?.(station.stationuuid);
       },
       (err) => {
         setStatus("error");
@@ -41,9 +54,11 @@ export default function Player({ station, onClose }: Props) {
     return () => {
       audio.pause();
     };
-  }, [station, volume]);
+    // We deliberately don't depend on `volume`; that's handled separately
+    // below so changing volume mid-stream doesn't re-start playback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [station]);
 
-  // Don't recreate the audio element when volume changes; just mutate it.
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
   }, [volume]);
@@ -71,9 +86,7 @@ export default function Player({ station, onClose }: Props) {
   };
 
   return (
-    <div
-      className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 max-w-3xl w-[92%]"
-    >
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 max-w-3xl w-[92%]">
       <div
         className="rounded-xl border px-4 py-3 flex items-center gap-3"
         style={{
@@ -83,12 +96,11 @@ export default function Player({ station, onClose }: Props) {
         }}
       >
         <audio
-          // Intentionally no `crossOrigin` attribute. Setting it (even to
-          // "anonymous") forces a CORS check on every stream URL, and most
-          // shoutcast/icecast servers don't send Access-Control-Allow-Origin,
-          // so the browser blocks the load. Without crossOrigin, the audio
-          // element treats the stream as opaque media (same model as an
-          // <img> tag) and plays it without a preflight.
+          // No `crossOrigin` attribute on purpose. Setting it would force
+          // a CORS preflight that most icecast/shoutcast servers don't
+          // satisfy, so the stream would fail to play. The trade-off is
+          // we can't read PCM samples through Web Audio for a real
+          // frequency-bar visualizer; the pulsing bars below are pure CSS.
           ref={audioRef}
           preload="none"
           onPlaying={() => setStatus("playing")}
@@ -107,10 +119,18 @@ export default function Player({ station, onClose }: Props) {
         >
           {status === "playing" ? <Pause size={18} fill="#0f0e0d" /> : <Play size={18} fill="#0f0e0d" />}
         </button>
+
+        <Pulse playing={status === "playing"} />
+
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-[#f0ede8] truncate">
-            {station.name}
+            {station.name.trim() || "(unnamed)"}
           </div>
+          {nowPlaying.title ? (
+            <div className="text-[11px] text-[#d4a844] truncate font-mono">
+              ♪ {nowPlaying.title}
+            </div>
+          ) : null}
           <div className="text-[11px] text-[#a09890] font-mono truncate">
             {station.country}
             {station.bitrate ? <span className="text-[#6a6460]"> · {station.bitrate} kbps</span> : null}
@@ -118,6 +138,16 @@ export default function Player({ station, onClose }: Props) {
             {status === "error" ? <span className="text-[#c45a3a]"> · {error ?? "error"}</span> : null}
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => onToggleFavorite(station.stationuuid)}
+          aria-label={isFavorite ? "Unstar" : "Star"}
+          title={isFavorite ? "Unstar" : "Star"}
+          className="text-[#a09890] hover:text-[#d4a844] flex-shrink-0"
+        >
+          <Star size={16} fill={isFavorite ? "#d4a844" : "none"} stroke={isFavorite ? "#d4a844" : "currentColor"} />
+        </button>
         <div className="hidden md:flex items-center gap-2 text-[#a09890]">
           <Volume2 size={14} />
           <input
@@ -151,6 +181,35 @@ export default function Player({ station, onClose }: Props) {
           <X size={18} />
         </button>
       </div>
+    </div>
+  );
+}
+
+// Three pulse bars next to the play button. They animate while playing
+// using staggered CSS keyframes; this is honest decoration, NOT actual
+// frequency-bar audio analysis (the audio element doesn't expose samples
+// in cross-origin mode and we'd rather have playback than visualization).
+function Pulse({ playing }: { playing: boolean }) {
+  return (
+    <div className="flex items-end gap-0.5 h-5 w-6 flex-shrink-0">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="block w-1 rounded-sm"
+          style={{
+            background: playing ? "#d4a844" : "#3a3835",
+            height: playing ? undefined : "30%",
+            animation: playing ? `pulse-bar 0.9s ${i * 0.12}s ease-in-out infinite` : "none",
+            transformOrigin: "bottom",
+          }}
+        />
+      ))}
+      <style jsx>{`
+        @keyframes pulse-bar {
+          0%, 100% { height: 25%; }
+          50% { height: 95%; }
+        }
+      `}</style>
     </div>
   );
 }

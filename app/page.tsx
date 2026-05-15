@@ -2,24 +2,52 @@
 
 import { useEffect, useMemo, useState } from "react";
 import StationsGlobe from "@/components/Globe";
-import Sidebar from "@/components/Sidebar";
+import Sidebar, { type ViewMode } from "@/components/Sidebar";
 import Player from "@/components/Player";
 import { fetchTopStations } from "@/lib/api";
 import { centroidFor, jitter } from "@/lib/centroids";
+import { useFavorites, useRecents } from "@/lib/persistent";
 import type { Station, StationDot } from "@/lib/types";
 
+// Pull initial filter and station state out of the URL on first render so
+// shared links land the user where they expect. Done as a function (not a
+// useEffect) so we never paint the wrong state once and then snap.
+function initialFromURL() {
+  if (typeof window === "undefined") {
+    return { country: "", tag: "", query: "", selected: null as string | null, view: "all" as ViewMode };
+  }
+  const sp = new URLSearchParams(window.location.search);
+  const view = sp.get("view") as ViewMode | null;
+  return {
+    country: sp.get("country") ?? "",
+    tag: sp.get("tag") ?? "",
+    query: sp.get("q") ?? "",
+    selected: sp.get("s"),
+    view: view === "starred" || view === "recent" ? view : ("all" as ViewMode),
+  };
+}
+
 export default function HomePage() {
+  const init = initialFromURL();
+
   const [stations, setStations] = useState<Station[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedUuid, setSelectedUuid] = useState<string | null>(null);
+
+  const [selectedUuid, setSelectedUuid] = useState<string | null>(init.selected);
   const [playing, setPlaying] = useState<Station | null>(null);
 
-  // Filter state lives here so the globe and sidebar see the same view.
-  const [query, setQuery] = useState("");
-  const [country, setCountry] = useState("");
-  const [tag, setTag] = useState("");
+  const [query, setQuery] = useState(init.query);
+  const [country, setCountry] = useState(init.country);
+  const [tag, setTag] = useState(init.tag);
+  const [view, setView] = useState<ViewMode>(init.view);
 
+  const { favorites, toggleFavorite, isFavorite } = useFavorites();
+  const { recents, recordPlay } = useRecents();
+
+  // Fetch stations once on mount. If the URL named a station, tune it in
+  // the same moment we have the catalog so the player and globe focus are
+  // already correct on first paint.
   useEffect(() => {
     let cancelled = false;
     fetchTopStations(5000)
@@ -27,6 +55,10 @@ export default function HomePage() {
         if (cancelled) return;
         setStations(data);
         setLoading(false);
+        if (init.selected) {
+          const s = data.find((x) => x.stationuuid === init.selected);
+          if (s) setPlaying(s);
+        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -36,11 +68,27 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
+    // The initial URL state is captured before mount; we don't want this
+    // effect re-running if it changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // First, project every (capped) station into a globe dot, with country
-  // centroids as a fallback for stations that lack explicit coordinates.
-  // We compute these once per stations load.
+  // Sync URL whenever the user changes anything that should be shareable.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams();
+    if (country) sp.set("country", country);
+    if (tag) sp.set("tag", tag);
+    if (query) sp.set("q", query);
+    if (selectedUuid) sp.set("s", selectedUuid);
+    if (view !== "all") sp.set("view", view);
+    const qs = sp.toString();
+    const next = `${window.location.pathname}${qs ? `?${qs}` : ""}`;
+    window.history.replaceState(null, "", next);
+  }, [country, tag, query, selectedUuid, view]);
+
+  // Project every (capped) station into a globe dot, with country
+  // centroids as a fallback for stations that lack explicit coords.
   const allDots = useMemo<StationDot[]>(() => {
     const max = Math.min(stations.length, 2500);
     const head = stations.slice(0, max);
@@ -71,19 +119,25 @@ export default function HomePage() {
     return out;
   }, [stations]);
 
-  // Index lookups so the filter step doesn't go quadratic.
   const stationByUuid = useMemo(() => {
     const m = new Map<string, Station>();
     for (const s of stations) m.set(s.stationuuid, s);
     return m;
   }, [stations]);
 
-  // Apply the same filters to the dots that the sidebar uses for its list.
-  // When a country is picked, only that country's dots show on the globe.
+  // Globe dots respect view (starred/recent) and filters.
   const dots = useMemo(() => {
-    if (!country && !tag && !query.trim()) return allDots;
+    const allowedUuids =
+      view === "starred"
+        ? favorites
+        : view === "recent"
+          ? new Set(recents)
+          : null;
+
+    if (!allowedUuids && !country && !tag && !query.trim()) return allDots;
     const q = query.trim().toLowerCase();
     return allDots.filter((d) => {
+      if (allowedUuids && !allowedUuids.has(d.uuid)) return false;
       const s = stationByUuid.get(d.uuid);
       if (!s) return false;
       if (country && s.country !== country) return false;
@@ -97,23 +151,19 @@ export default function HomePage() {
       }
       return true;
     });
-  }, [allDots, country, tag, query, stationByUuid]);
+  }, [allDots, view, favorites, recents, country, tag, query, stationByUuid]);
 
-  // Country selection → globe focus. We use the country code of any station
-  // with that name to look up our centroid table; if we don't know the
-  // country, we fall back to averaging that country's dots.
+  // Country selection drives the globe focus.
   const focus = useMemo(() => {
     if (!country) return null;
     const sample = stations.find((s) => s.country === country);
     if (sample) {
       const centroid = centroidFor(sample.countrycode);
       if (centroid) {
-        // Tighter zoom for small countries, looser for huge ones.
         const big = ["US", "RU", "CN", "CA", "BR", "AU"].includes(sample.countrycode.toUpperCase());
         return { lat: centroid[0], lng: centroid[1], altitude: big ? 1.5 : 0.8 };
       }
     }
-    // Fall back to centroid of the country's dots.
     const matching = dots.filter((d) => d.country === country);
     if (matching.length === 0) return null;
     const lat = matching.reduce((s, d) => s + d.lat, 0) / matching.length;
@@ -164,6 +214,9 @@ export default function HomePage() {
             setPlaying(null);
             setSelectedUuid(null);
           }}
+          isFavorite={playing ? isFavorite(playing.stationuuid) : false}
+          onToggleFavorite={toggleFavorite}
+          onPlayStart={recordPlay}
         />
       </div>
 
@@ -177,6 +230,11 @@ export default function HomePage() {
         onCountryChange={setCountry}
         tag={tag}
         onTagChange={setTag}
+        view={view}
+        onViewChange={setView}
+        favorites={favorites}
+        onToggleFavorite={toggleFavorite}
+        recents={recents}
       />
     </div>
   );
