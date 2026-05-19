@@ -17,6 +17,10 @@ interface CachedPayload {
   data: Station[];
 }
 
+// Per-mirror request budget. Without this, a hung mirror would block the
+// page indefinitely on first load instead of moving on to the next one.
+const MIRROR_TIMEOUT_MS = 8_000;
+
 export async function fetchTopStations(limit = 5000): Promise<Station[]> {
   if (typeof window !== "undefined") {
     try {
@@ -45,12 +49,15 @@ export async function fetchTopStations(limit = 5000): Promise<Station[]> {
 
   let lastErr: unknown = null;
   for (const base of MIRRORS) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), MIRROR_TIMEOUT_MS);
     try {
       const resp = await fetch(`${base}/json/stations/search?${params.toString()}`, {
         // No custom headers: browsers strip User-Agent and adding anything
         // turns this into a CORS-preflighted request, which is slower and
         // an extra failure mode. Radio Browser returns a permissive CORS
         // header (`access-control-allow-origin: *`) on plain GET.
+        signal: ac.signal,
       });
       if (!resp.ok) {
         lastErr = new Error(`${resp.status} ${resp.statusText}`);
@@ -62,6 +69,8 @@ export async function fetchTopStations(limit = 5000): Promise<Station[]> {
     } catch (err) {
       lastErr = err;
       continue;
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw new Error(

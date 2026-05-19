@@ -53,15 +53,13 @@ export function terminatorPath(date: Date = new Date(), samples = 240): Array<[n
   const sy = Math.cos(sLat) * Math.sin(sLng);
   const sz = Math.sin(sLat);
 
-  // Pick an arbitrary perpendicular vector. Using the world up-axis works
-  // unless the subsolar point happens to be exactly at a pole.
-  let ax = -Math.sin(sLng);
-  let ay = Math.cos(sLng);
-  let az = 0;
-  const aLen = Math.hypot(ax, ay, az) || 1;
-  ax /= aLen;
-  ay /= aLen;
-  az /= aLen;
+  // (-sin λ, cos λ, 0) is the local "east" vector at the subsolar point
+  // and is always perpendicular to s (its z component is zero while s's
+  // z component carries the latitude), so it's a safe first basis vector
+  // even at the poles. It's already unit length: sin² + cos² = 1.
+  const ax = -Math.sin(sLng);
+  const ay = Math.cos(sLng);
+  const az = 0;
 
   // b = s × a, giving the third basis vector.
   const bx = sy * az - sz * ay;
