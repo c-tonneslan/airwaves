@@ -1,13 +1,25 @@
 import type { Station } from "./types";
 
-// Radio Browser is run by volunteers and individual mirrors go up and down.
-// We try them in order on failure rather than picking one at random.
+// Radio Browser is run by volunteers and individual mirrors go up and
+// down. The project asks clients not to pin one server, so we shuffle
+// the list per call and fall through to the next on failure.
 const MIRRORS = [
   "https://de1.api.radio-browser.info",
   "https://de2.api.radio-browser.info",
   "https://at1.api.radio-browser.info",
   "https://nl1.api.radio-browser.info",
 ];
+
+// A fresh randomized copy of MIRRORS. Spreading the starting point keeps
+// one volunteer server from absorbing every airwaves visitor's first hit.
+function shuffledMirrors(): string[] {
+  const out = [...MIRRORS];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
 
 const CACHE_KEY = "airwaves.stations.v2";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24 hours
@@ -48,7 +60,7 @@ export async function fetchTopStations(limit = 5000): Promise<Station[]> {
   });
 
   let lastErr: unknown = null;
-  for (const base of MIRRORS) {
+  for (const base of shuffledMirrors()) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), MIRROR_TIMEOUT_MS);
     try {
@@ -94,6 +106,6 @@ function cacheStations(data: Station[]) {
  */
 export function reportPlay(uuid: string): void {
   if (!uuid) return;
-  // Use the same primary mirror; one failed click count won't ruin anyone's day.
-  fetch(`${MIRRORS[0]}/json/url/${uuid}`).catch(() => {});
+  // Any mirror will do; one failed click count won't ruin anyone's day.
+  fetch(`${shuffledMirrors()[0]}/json/url/${uuid}`).catch(() => {});
 }
