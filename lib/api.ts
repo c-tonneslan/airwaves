@@ -39,7 +39,15 @@ export async function fetchTopStations(limit = 5000): Promise<Station[]> {
       const raw = window.localStorage.getItem(CACHE_KEY);
       if (raw) {
         const cached: CachedPayload = JSON.parse(raw);
-        if (Date.now() - cached.fetched < CACHE_TTL_MS) {
+        // A version-skewed cache (or a half-written entry from a previous
+        // tab crash) can still parse as JSON but lack the data array. Bare
+        // .data lookup would return undefined and break the page; refetch
+        // instead.
+        if (
+          Array.isArray(cached?.data) &&
+          typeof cached.fetched === "number" &&
+          Date.now() - cached.fetched < CACHE_TTL_MS
+        ) {
           return cached.data;
         }
       }
